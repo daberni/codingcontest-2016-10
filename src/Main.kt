@@ -2,6 +2,7 @@ import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 
 const val ORIGIN = "origin"
+const val ROOT_BLOCK = "0b00000000"
 
 
 data class Transaction(val id: String, val inputs: List<TransactionInput>, val outputs: List<TransactionOutput>, val timestamp: Long, var valid: Boolean = false)
@@ -12,10 +13,21 @@ data class TransactionOutput(val owner: String, val amount: Int, var consumed: B
 
 data class TransactionRequest(val transactionId: String, val from: String, val to: String, val amount: Int, val timestamp: Long)
 
+data class Block(val blockId: String, val previousBlockId: String, val transactionIds: List<String>, val creationTime: Long)
+
+data class ValidBlock(val blockId: String, val previousBlock: ValidBlock?, val transactions: List<Transaction>, val creationTime: Long) {
+
+    val depth: Int
+        get() = (previousBlock?.depth ?: 0) + 1
+
+    val blockChain: List<ValidBlock>
+        get() = (previousBlock?.blockChain ?: emptyList()) + this
+}
+
 
 fun main(args: Array<String>) {
 
-    val level = "level4"
+    val level = "level5"
 
     File("input").listFiles({ dir, filename -> filename.startsWith(level) }).forEach {
         val result = processFile(it)
@@ -56,21 +68,22 @@ fun processFile(file: File): Array<String> {
         Transaction(id, inputs, outputs, parts.poll().toLong())
     }
 
-    val numberOfTransactionRequests = lines.poll().toInt()
-    val transactionRequests = (1..numberOfTransactionRequests).map {
-        val parts = lines.poll().split(" ")
-        TransactionRequest(parts[0], parts[1], parts[2], parts[3].toInt(), parts[4].toLong())
+    val numberOfBlocks = lines.poll().toInt()
+    val blocks = (1..numberOfBlocks).map {
+        val parts = LinkedBlockingQueue(lines.poll().split(" "))
+        val blockId = parts.poll()
+        val previousBlockId = parts.poll()
+        val numberTransactions = parts.poll().toInt()
+        val transactionIds = (1..numberTransactions).map { parts.poll() }
+        val creationTime = parts.poll().toLong()
+
+        Block(blockId, previousBlockId, transactionIds, creationTime)
     }
 
 
     val validTransactions = transactions.sortedBy { it.timestamp }.filter {
         validate(it, transactions.filter { it.valid })
-    }.toMutableList()
-
-    transactionRequests.sortedBy { it.timestamp }.forEach {
-        tryProcessTransactionRequest(it, validTransactions)
     }
-
 
     val amountNotConsumed = validTransactions.flatMap { it.outputs }.filter { !it.consumed }.sumBy { it.amount }
     val amoutSeeded = validTransactions.flatMap { it.inputs }.filter { it.owner == ORIGIN }.sumBy { it.amount }
@@ -78,13 +91,26 @@ fun processFile(file: File): Array<String> {
         throw IllegalStateException("amountNotConsumed: $amountNotConsumed != amoutSeeded $amoutSeeded")
     }
 
-    val result = arrayOf(validTransactions.count().toString()) + validTransactions.sortedBy { it.timestamp }.map {
-        val inputs = it.inputs.joinToString(" ") { "${it.transactionId} ${it.owner} ${it.amount}" }
-        val outputs = it.outputs.joinToString(" ") { "${it.owner} ${it.amount}" }
-        "${it.id} ${it.inputs.count()} $inputs ${it.outputs.count()} $outputs ${it.timestamp}"
-    }
 
-    return result
+    val validBlocks = mutableListOf<ValidBlock>()
+    blocks.sortedBy { it.creationTime }
+            .filter { validateBlock(it, validBlocks, validTransactions) }
+
+    val deepestBlock = validBlocks.maxBy { it.depth } ?: throw Exception("no blockchain found")
+    val deepestTransactions = deepestBlock.blockChain.flatMap { it.transactions }.sortedBy { it.timestamp }
+
+    return arrayOf<String>() +
+            deepestTransactions.count().toString() +
+            deepestTransactions.map {
+                val inputs = it.inputs.joinToString(" ") { "${it.transactionId} ${it.owner} ${it.amount}" }
+                val outputs = it.outputs.joinToString(" ") { "${it.owner} ${it.amount}" }
+                "${it.id} ${it.inputs.count()} $inputs ${it.outputs.count()} $outputs ${it.timestamp}"
+            } +
+            deepestBlock.blockChain.count().toString() +
+            deepestBlock.blockChain.sortedBy { it.creationTime }.map {
+                val transactionIds = it.transactions.joinToString(" ") { it.id }
+                "${it.blockId} ${it.previousBlock?.blockId ?: ROOT_BLOCK} ${it.transactions.count()} $transactionIds ${it.creationTime}"
+            }
 }
 
 
@@ -119,6 +145,30 @@ fun validate(transaction: Transaction, previousTransactions: List<Transaction>):
         it.consumed = true
     }
     transaction.valid = true
+    return true
+}
+
+
+fun validateBlock(block: Block, validBlocks: MutableList<ValidBlock>, validTransactions: List<Transaction>): Boolean {
+    val previousBlock = validBlocks.singleOrNull { it.blockId == block.previousBlockId }
+
+    if (block.previousBlockId != ROOT_BLOCK && previousBlock == null) return false
+
+    val transactions = block.transactionIds.mapNotNull { transactionId -> validTransactions.firstOrNull { it.id == transactionId } }
+
+    if (transactions.count() != block.transactionIds.count()) return false
+
+    if (block.transactionIds.count() > 20) return false
+
+    if (transactions.any { it.timestamp > block.creationTime }) return false
+
+    val previousTransactions = previousBlock?.blockChain?.flatMap { it.transactions } ?: emptyList()
+    val isInPreviousBlock = transactions.flatMap { it.inputs }.all { input -> input.owner == ORIGIN || previousTransactions.any { it.id == input.transactionId } }
+
+    if (!isInPreviousBlock) return false
+
+    validBlocks.add(ValidBlock(block.blockId, previousBlock, transactions, block.creationTime))
+
     return true
 }
 
