@@ -1,14 +1,18 @@
 import java.io.File
 import java.util.concurrent.LinkedBlockingQueue
 
-//
-data class Account(val name: String, val accountNumber: String, var balance: Long, val overdraftLimit: Long)
+const val ORIGIN = "origin"
 
-data class Transaction(val from: String, val to: String, val amount: Long, val submitTime: Long)
+
+data class Transaction(val id: String, val inputs: List<TransactionInput>, val outputs: List<TransactionOutput>, val timestamp: Long, var valid: Boolean = false)
+
+data class TransactionInput(val transactionId: String, val owner: String, val amount: Int)
+
+data class TransactionOutput(val owner: String, val amount: Int, var consumed: Boolean = false)
 
 fun main(args: Array<String>) {
 
-    val level = "level2"
+    val level = "level3"
 
     File("input").listFiles({ dir, filename -> filename.startsWith(level) }).forEach {
         val result = processFile(it)
@@ -27,82 +31,78 @@ fun main(args: Array<String>) {
     }
 }
 
+
 fun processFile(file: File): Array<String> {
     println("processing ${file.name}...")
 
     val lines = LinkedBlockingQueue(file.readLines())
 
-    val numberOfAccounts = lines.poll().toInt()
-    val accounts = (1..numberOfAccounts).map {
-        val parts = lines.poll().split(" ")
-        Account(parts[0], parts[1], parts[2].toLong(), parts[3].toLong())
-    }.filter {
-        validateAccountNumber(it.accountNumber)
-    }
-
     val numberOfTransactions = lines.poll().toInt()
     val transactions = (1..numberOfTransactions).map {
-        val parts = lines.poll().split(" ")
-        Transaction(parts[0], parts[1], parts[2].toLong(), parts[3].toLong())
+        val parts = LinkedBlockingQueue(lines.poll().split(" "))
+        val id = parts.poll()
+        val numberInputs = parts.poll().toInt()
+        val inputs = (1..numberInputs).map {
+            TransactionInput(parts.poll(), parts.poll(), parts.poll().toInt())
+        }
+        val numberOutputs = parts.poll().toInt()
+        val outputs = (1..numberOutputs).map {
+            TransactionOutput(parts.poll(), parts.poll().toInt())
+        }
+
+        Transaction(id, inputs, outputs, parts.poll().toLong())
     }
 
-    transactions.sortedBy { it.submitTime }.forEach {
-        processTransaction(it, accounts)
+    val validTransactions = transactions.sortedBy { it.timestamp }.filter {
+        validate(it, transactions.filter { it.valid })
     }
 
-    val result = arrayOf(accounts.count().toString()) + accounts.map { "${it.name} ${it.balance}" }
+    val amountNotConsumed = validTransactions.flatMap { it.outputs }.filter { !it.consumed }.sumBy { it.amount }
+    val amoutSeeded = validTransactions.flatMap { it.inputs }.filter { it.owner == ORIGIN }.sumBy { it.amount }
+    if (amountNotConsumed != amoutSeeded) {
+        throw IllegalStateException("amountNotConsumed: $amountNotConsumed != amoutSeeded $amoutSeeded")
+    }
+
+    val result = arrayOf(validTransactions.count().toString()) + validTransactions.map {
+        val inputs = it.inputs.joinToString(" ") { "${it.transactionId} ${it.owner} ${it.amount}" }
+        val outputs = it.outputs.joinToString(" ") { "${it.owner} ${it.amount}" }
+        "${it.id} ${it.inputs.count()} $inputs ${it.outputs.count()} $outputs ${it.timestamp}"
+    }
 
     return result
 }
 
-fun validateAccountNumber(accountNumber: String): Boolean {
-    if (!accountNumber.startsWith("CAT")) {
-        println("invalid accountNumber, not starting with CAT: " + accountNumber)
-        return false
-    }
 
-    val checksum = accountNumber.substring(3, 5).toInt()
-    val accountId = accountNumber.substring(5)
+fun validate(transaction: Transaction, previousTransactions: List<Transaction>): Boolean {
+    // sum of inputs = sum of outputs
+    if (transaction.inputs.sumBy { it.amount } != transaction.outputs.sumBy { it.amount }) return false
 
-    if (accountId.matches(Regex("[a-zA-Z]{10}")).not()) {
-        println("invalid accountNumber, not 10 characters: " + accountNumber)
-        return false
-    }
+    // owner listed more than once in outputs
+    if (transaction.outputs.groupBy { it.owner }.any { it.value.count() > 1 }) return false
 
-    val asciiCodes = accountId.toList().map { it.toInt() }
-    val characterCounts = asciiCodes.groupBy { it }.mapValues { it.value.count() }
-    val equalLowercaseUppercase = ('A'.toInt()..'Z'.toInt()).all {
-        val uppercaseCount = characterCounts.getOrElse(it, { 0 })
-        val lowercaseCount = characterCounts.getOrElse(it + 32, { 0 })
+    // each amount > 0
+    if (transaction.inputs.any { it.amount <= 0 } || transaction.outputs.any { it.amount <= 0 }) return false
 
-        lowercaseCount == uppercaseCount
-    }
-    if (!equalLowercaseUppercase) {
-        println("invalid accountNumber, no equal count: " + accountNumber)
-        return false
-    }
+    // Input elements must be output elements of previous transactions
+    val consumedOutputs = mutableListOf<TransactionOutput>()
+    val allInputsValid = transaction.inputs.all { input ->
+        if (input.owner == ORIGIN) return@all true
 
-    val calculatedChecksum = 98 - "${accountId}CAT00".sumBy { it.toInt() }.rem(97)
-    if (calculatedChecksum != checksum) {
-        println("invalid accountNumber, invalid calculated checksum: $calculatedChecksum, checksum: $checksum")
-        return false
-    }
-
-    return true
-}
-
-fun processTransaction(transaction: Transaction, accounts: List<Account>) {
-
-    val from = accounts.singleOrNull { it.accountNumber == transaction.from }
-    val to = accounts.singleOrNull { it.accountNumber == transaction.to }
-
-    if (from != null && to != null) {
-        val targetAmout = from.balance - transaction.amount
-        if (targetAmout > -from.overdraftLimit) {
-            from.balance -= transaction.amount
-            to.balance += transaction.amount
-        } else {
-            println("target amount of $targetAmout over overdraftLimit ${from.overdraftLimit}")
+        return@all previousTransactions.any { previousTransaction ->
+            val matchingPreviousOutput = previousTransaction.outputs.firstOrNull { output -> !output.consumed && !consumedOutputs.contains(output) && output.owner == input.owner && output.amount == input.amount }
+            if (previousTransaction.id == input.transactionId && matchingPreviousOutput != null) {
+                consumedOutputs.add(matchingPreviousOutput)
+                true
+            } else {
+                false
+            }
         }
     }
+    if (!allInputsValid) return false
+
+    consumedOutputs.forEach {
+        it.consumed = true
+    }
+    transaction.valid = true
+    return true
 }
