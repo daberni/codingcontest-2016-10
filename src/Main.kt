@@ -10,9 +10,12 @@ data class TransactionInput(val transactionId: String, val owner: String, val am
 
 data class TransactionOutput(val owner: String, val amount: Int, var consumed: Boolean = false)
 
+data class TransactionRequest(val transactionId: String, val from: String, val to: String, val amount: Int, val timestamp: Long)
+
+
 fun main(args: Array<String>) {
 
-    val level = "level3"
+    val level = "level4"
 
     File("input").listFiles({ dir, filename -> filename.startsWith(level) }).forEach {
         val result = processFile(it)
@@ -53,9 +56,21 @@ fun processFile(file: File): Array<String> {
         Transaction(id, inputs, outputs, parts.poll().toLong())
     }
 
+    val numberOfTransactionRequests = lines.poll().toInt()
+    val transactionRequests = (1..numberOfTransactionRequests).map {
+        val parts = lines.poll().split(" ")
+        TransactionRequest(parts[0], parts[1], parts[2], parts[3].toInt(), parts[4].toLong())
+    }
+
+
     val validTransactions = transactions.sortedBy { it.timestamp }.filter {
         validate(it, transactions.filter { it.valid })
+    }.toMutableList()
+
+    transactionRequests.sortedBy { it.timestamp }.forEach {
+        tryProcessTransactionRequest(it, validTransactions)
     }
+
 
     val amountNotConsumed = validTransactions.flatMap { it.outputs }.filter { !it.consumed }.sumBy { it.amount }
     val amoutSeeded = validTransactions.flatMap { it.inputs }.filter { it.owner == ORIGIN }.sumBy { it.amount }
@@ -63,7 +78,7 @@ fun processFile(file: File): Array<String> {
         throw IllegalStateException("amountNotConsumed: $amountNotConsumed != amoutSeeded $amoutSeeded")
     }
 
-    val result = arrayOf(validTransactions.count().toString()) + validTransactions.map {
+    val result = arrayOf(validTransactions.count().toString()) + validTransactions.sortedBy { it.timestamp }.map {
         val inputs = it.inputs.joinToString(" ") { "${it.transactionId} ${it.owner} ${it.amount}" }
         val outputs = it.outputs.joinToString(" ") { "${it.owner} ${it.amount}" }
         "${it.id} ${it.inputs.count()} $inputs ${it.outputs.count()} $outputs ${it.timestamp}"
@@ -105,4 +120,36 @@ fun validate(transaction: Transaction, previousTransactions: List<Transaction>):
     }
     transaction.valid = true
     return true
+}
+
+
+fun tryProcessTransactionRequest(transactionRequest: TransactionRequest, transactions: MutableList<Transaction>) {
+    if (transactionRequest.amount == 0) return
+
+    val availableOutputs = transactions
+            .filter { it.timestamp < transactionRequest.timestamp }
+            .sortedBy { it.timestamp }
+            .flatMap { transaction -> transaction.outputs.map { Pair(transaction.id, it) } }
+            .filter { it.second.owner == transactionRequest.from && !it.second.consumed }
+
+    var currentAmount = 0
+    val matchingOutputs = availableOutputs.takeWhile {
+        val required = currentAmount < transactionRequest.amount
+        if (required) {
+            currentAmount += it.second.amount
+        }
+        required
+    }
+
+    if (currentAmount >= transactionRequest.amount) {
+        val outputs = mutableListOf(TransactionOutput(transactionRequest.to, transactionRequest.amount))
+        if (currentAmount > transactionRequest.amount) {
+            outputs.add(TransactionOutput(transactionRequest.from, currentAmount - transactionRequest.amount))
+        }
+
+        transactions.add(Transaction(transactionRequest.transactionId, matchingOutputs.map { TransactionInput(it.first, it.second.owner, it.second.amount) }, outputs, transactionRequest.timestamp, true))
+        matchingOutputs.forEach {
+            it.second.consumed = true
+        }
+    }
 }
