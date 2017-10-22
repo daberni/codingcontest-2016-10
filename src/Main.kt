@@ -5,7 +5,7 @@ const val ORIGIN = "origin"
 const val ROOT_BLOCK = "0b00000000"
 
 
-data class Transaction(val id: String, val inputs: List<TransactionInput>, val outputs: List<TransactionOutput>, val timestamp: Long, var valid: Boolean = false)
+data class Transaction(val id: String, val inputs: List<TransactionInput>, val outputs: List<TransactionOutput>, val timestamp: Long)
 
 data class TransactionInput(val transactionId: String, val owner: String, val amount: Int)
 
@@ -80,10 +80,9 @@ fun processFile(file: File): Array<String> {
         Block(blockId, previousBlockId, transactionIds, creationTime)
     }
 
-
-    val validTransactions = transactions.sortedBy { it.timestamp }.filter {
-        validate(it, transactions.filter { it.valid })
-    }
+    val validTransactions = transactions
+            .sortedBy { it.timestamp }
+            .fold(emptyList<Transaction>(), { validTransactions, transaction -> (validTransactions + validate(transaction, validTransactions)).filterNotNull() })
 
     val amountNotConsumed = validTransactions.flatMap { it.outputs }.filter { !it.consumed }.sumBy { it.amount }
     val amoutSeeded = validTransactions.flatMap { it.inputs }.filter { it.owner == ORIGIN }.sumBy { it.amount }
@@ -92,9 +91,9 @@ fun processFile(file: File): Array<String> {
     }
 
 
-    val validBlocks = mutableListOf<ValidBlock>()
-    blocks.sortedBy { it.creationTime }
-            .filter { validateBlock(it, validBlocks, validTransactions) }
+    val validBlocks = blocks
+            .sortedBy { it.creationTime }
+            .fold(emptyList<ValidBlock>(), { validBlocks, block -> (validBlocks + validateBlock(block, validBlocks, validTransactions)).filterNotNull() })
 
 
     val blockChain = validBlocks.sortedWith(Comparator { o1, o2 ->
@@ -134,15 +133,15 @@ fun processFile(file: File): Array<String> {
 }
 
 
-fun validate(transaction: Transaction, previousTransactions: List<Transaction>): Boolean {
+fun validate(transaction: Transaction, previousTransactions: List<Transaction>): Transaction? {
     // sum of inputs = sum of outputs
-    if (transaction.inputs.sumBy { it.amount } != transaction.outputs.sumBy { it.amount }) return false
+    if (transaction.inputs.sumBy { it.amount } != transaction.outputs.sumBy { it.amount }) return null
 
     // owner listed more than once in outputs
-    if (transaction.outputs.groupBy { it.owner }.any { it.value.count() > 1 }) return false
+    if (transaction.outputs.groupBy { it.owner }.any { it.value.count() > 1 }) return null
 
     // each amount > 0
-    if (transaction.inputs.any { it.amount <= 0 } || transaction.outputs.any { it.amount <= 0 }) return false
+    if (transaction.inputs.any { it.amount <= 0 } || transaction.outputs.any { it.amount <= 0 }) return null
 
     // Input elements must be output elements of previous transactions
     val consumedOutputs = mutableListOf<TransactionOutput>()
@@ -159,37 +158,34 @@ fun validate(transaction: Transaction, previousTransactions: List<Transaction>):
             }
         }
     }
-    if (!allInputsValid) return false
+    if (!allInputsValid) return null
 
     consumedOutputs.forEach {
         it.consumed = true
     }
-    transaction.valid = true
-    return true
+    return transaction
 }
 
 
-fun validateBlock(block: Block, validBlocks: MutableList<ValidBlock>, validTransactions: List<Transaction>): Boolean {
+fun validateBlock(block: Block, validBlocks: List<ValidBlock>, validTransactions: List<Transaction>): ValidBlock? {
     val previousBlock = validBlocks.singleOrNull { it.blockId == block.previousBlockId }
 
-    if (block.previousBlockId != ROOT_BLOCK && previousBlock == null) return false
+    if (block.previousBlockId != ROOT_BLOCK && previousBlock == null) return null
 
     val transactions = block.transactionIds.mapNotNull { transactionId -> validTransactions.firstOrNull { it.id == transactionId } }
 
-    if (transactions.count() != block.transactionIds.count()) return false
+    if (transactions.count() != block.transactionIds.count()) return null
 
-    if (block.transactionIds.count() > 20) return false
+    if (block.transactionIds.count() > 20) return null
 
-    if (transactions.any { it.timestamp > block.creationTime }) return false
+    if (transactions.any { it.timestamp > block.creationTime }) return null
 
     val previousTransactions = previousBlock?.blockChain?.flatMap { it.transactions } ?: emptyList()
     val isInPreviousBlock = transactions.flatMap { it.inputs }.all { input -> input.owner == ORIGIN || previousTransactions.any { it.id == input.transactionId } }
 
-    if (!isInPreviousBlock) return false
+    if (!isInPreviousBlock) return null
 
-    validBlocks.add(ValidBlock(block.blockId, previousBlock, transactions, block.creationTime))
-
-    return true
+    return ValidBlock(block.blockId, previousBlock, transactions, block.creationTime)
 }
 
 
@@ -217,7 +213,7 @@ fun tryProcessTransactionRequest(transactionRequest: TransactionRequest, transac
             outputs.add(TransactionOutput(transactionRequest.from, currentAmount - transactionRequest.amount))
         }
 
-        transactions.add(Transaction(transactionRequest.transactionId, matchingOutputs.map { TransactionInput(it.first, it.second.owner, it.second.amount) }, outputs, transactionRequest.timestamp, true))
+        transactions.add(Transaction(transactionRequest.transactionId, matchingOutputs.map { TransactionInput(it.first, it.second.owner, it.second.amount) }, outputs, transactionRequest.timestamp))
         matchingOutputs.forEach {
             it.second.consumed = true
         }
