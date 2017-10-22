@@ -96,20 +96,40 @@ fun processFile(file: File): Array<String> {
     blocks.sortedBy { it.creationTime }
             .filter { validateBlock(it, validBlocks, validTransactions) }
 
-    val deepestBlock = validBlocks.maxBy { it.depth } ?: throw Exception("no blockchain found")
-    val deepestTransactions = deepestBlock.blockChain.flatMap { it.transactions }.sortedBy { it.timestamp }
+
+    val blockChain = validBlocks.sortedWith(Comparator { o1, o2 ->
+        val depthComparison = o1.depth.compareTo(o2.depth)
+        if (depthComparison == 0) {
+            return@Comparator o1.creationTime.compareTo(o2.creationTime)
+        }
+        return@Comparator depthComparison
+    }).lastOrNull()?.blockChain ?: emptyList()
+    val blockChainTransactions = blockChain.flatMap { it.transactions }.sortedBy { it.timestamp }
 
     return arrayOf<String>() +
-            deepestTransactions.count().toString() +
-            deepestTransactions.map {
+            blockChainTransactions.count().toString() +
+            blockChainTransactions.map {
                 val inputs = it.inputs.joinToString(" ") { "${it.transactionId} ${it.owner} ${it.amount}" }
                 val outputs = it.outputs.joinToString(" ") { "${it.owner} ${it.amount}" }
-                "${it.id} ${it.inputs.count()} $inputs ${it.outputs.count()} $outputs ${it.timestamp}"
+                listOf(
+                        it.id,
+                        it.inputs.count().toString(),
+                        inputs,
+                        it.outputs.count().toString(),
+                        outputs,
+                        it.timestamp.toString()
+                ).filter(String::isNotEmpty).joinToString(" ")
             } +
-            deepestBlock.blockChain.count().toString() +
-            deepestBlock.blockChain.sortedBy { it.creationTime }.map {
+            blockChain.count().toString() +
+            blockChain.sortedBy { it.creationTime }.map {
                 val transactionIds = it.transactions.joinToString(" ") { it.id }
-                "${it.blockId} ${it.previousBlock?.blockId ?: ROOT_BLOCK} ${it.transactions.count()} $transactionIds ${it.creationTime}"
+                listOf(
+                        it.blockId,
+                        it.previousBlock?.blockId ?: ROOT_BLOCK,
+                        it.transactions.count().toString(),
+                        transactionIds,
+                        it.creationTime.toString()
+                ).filter(String::isNotEmpty).joinToString(" ")
             }
 }
 
