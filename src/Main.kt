@@ -96,13 +96,7 @@ fun processFile(file: File): Array<String> {
             .fold(emptyList<ValidBlock>(), { validBlocks, block -> (validBlocks + validateBlock(block, validBlocks, validTransactions)).filterNotNull() })
 
 
-    val blockChain = validBlocks.sortedWith(Comparator { o1, o2 ->
-        val depthComparison = o1.depth.compareTo(o2.depth)
-        if (depthComparison == 0) {
-            return@Comparator o1.creationTime.compareTo(o2.creationTime)
-        }
-        return@Comparator depthComparison
-    }).lastOrNull()?.blockChain ?: emptyList()
+    val blockChain = validBlocks.sortedWith(compareBy({ it.depth }, { it.creationTime })).lastOrNull()?.blockChain ?: emptyList()
     val blockChainTransactions = blockChain.flatMap { it.transactions }.sortedBy { it.timestamp }
 
     return arrayOf<String>() +
